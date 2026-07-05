@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { UploadCloud, FileText, Trash2, Play, X, Download, FolderArchive } from 'lucide-react'
+import { UploadCloud, FileText, Trash2, Play, X, Download, FolderArchive, RotateCw } from 'lucide-react'
 import { GlassPanel } from '../common/GlassPanel'
 import { Button } from '../common/Button'
 import { ProgressBar, StatusBadge } from '../common/Progress'
@@ -33,6 +33,7 @@ export function UploadPage({ onNavigate }: { onNavigate: (p: PageId) => void }) 
 
   const editableCount = files.filter((f) => !f.isBinaryPassthrough).length
   const pendingCount = files.filter((f) => f.status === 'pending' || f.status === 'error').length
+  const errorCount = files.filter((f) => f.status === 'error').length
 
   return (
     <div className="space-y-6">
@@ -96,6 +97,10 @@ export function UploadPage({ onNavigate }: { onNavigate: (p: PageId) => void }) 
               {isTranslating ? (
                 <Button variant="danger" size="sm" onClick={cancelTranslation}>
                   <X size={14} /> Huỷ dịch
+                </Button>
+              ) : errorCount > 0 ? (
+                <Button size="sm" variant="secondary" onClick={() => translateAll()} disabled={!apiKey} className="border-[var(--color-danger)]/30 text-[var(--color-danger)]">
+                  <RotateCw size={14} /> Thử lại {errorCount} tệp lỗi
                 </Button>
               ) : (
                 <Button size="sm" onClick={() => translateAll()} disabled={pendingCount === 0 || !apiKey}>

@@ -58,8 +58,41 @@ async function callOnce(params: TranslateChunkParams): Promise<string> {
   return content
 }
 
-const MAX_RETRIES = 3
-const RETRY_BASE_DELAY_MS = 1000
+const MAX_RETRIES = 5
+const RETRY_BASE_DELAY_MS = 1200
+const RETRY_MAX_DELAY_MS = 20000
+
+// 401/403: API Key invalid — retrying never helps.
+// 400/404/422: malformed request — retrying the same payload won't help either.
+// Everything else (429 rate-limited, 5xx server/capacity errors, network errors) is transient and worth retrying.
+const NON_RETRYABLE_STATUSES = new Set([400, 401, 403, 404, 422])
+const CAPACITY_STATUSES = new Set([429, 503])
+
+function isCapacityError(err: unknown): boolean {
+  return err instanceof TranslationApiError && err.status !== undefined && CAPACITY_STATUSES.has(err.status)
+}
+
+function backoffDelay(attempt: number, capacity: boolean): number {
+  const base = capacity ? RETRY_BASE_DELAY_MS * 1.8 : RETRY_BASE_DELAY_MS
+  const raw = base * 2 ** attempt
+  const jitter = raw * (0.75 + Math.random() * 0.5) // ±25% jitter to avoid synchronized retry storms
+  return Math.min(RETRY_MAX_DELAY_MS, jitter)
+}
+
+// When the upstream reports "no available channel" (503) or rate-limits us
+// (429), every in-flight chunk hitting the same wall at once just wastes
+// retries. This shared cooldown makes all of them briefly stand down together
+// instead of hammering an already-overloaded pool.
+let capacityCooldownUntil = 0
+
+function noteCapacityError(delayMs: number) {
+  capacityCooldownUntil = Math.max(capacityCooldownUntil, Date.now() + delayMs)
+}
+
+async function waitForCapacityCooldown(signal?: AbortSignal): Promise<void> {
+  const wait = capacityCooldownUntil - Date.now()
+  if (wait > 0) await sleep(wait, signal)
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -74,6 +107,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 async function translateChunkWithRetry(params: TranslateChunkParams): Promise<string> {
   let lastError: unknown
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    await waitForCapacityCooldown(params.signal)
     try {
       return await callOnce(params)
     } catch (err) {
@@ -82,14 +116,23 @@ async function translateChunkWithRetry(params: TranslateChunkParams): Promise<st
         throw err
       }
       const errMsg = err instanceof Error ? err.message : String(err)
-      // Don't retry on auth errors (401/403) - won't help
-      if (err instanceof TranslationApiError && (err.status === 401 || err.status === 403)) {
-        liveLog.add('error', `${params.label ?? 'Yêu cầu'}: lỗi xác thực API Key — ${errMsg}`)
+
+      if (err instanceof TranslationApiError && err.status !== undefined && NON_RETRYABLE_STATUSES.has(err.status)) {
+        const reason = err.status === 401 || err.status === 403 ? 'lỗi xác thực API Key' : 'yêu cầu không hợp lệ'
+        liveLog.add('error', `${params.label ?? 'Yêu cầu'}: ${reason} — ${errMsg}`)
         throw err
       }
+
+      const capacity = isCapacityError(err)
       if (attempt < MAX_RETRIES) {
-        liveLog.add('warning', `${params.label ?? 'Yêu cầu'}: lỗi (${errMsg}), thử lại lần ${attempt + 1}/${MAX_RETRIES}...`)
-        await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt, params.signal)
+        const delay = backoffDelay(attempt, capacity)
+        if (capacity) noteCapacityError(delay)
+        const reason = capacity ? 'máy chủ AI đang quá tải (không còn kênh xử lý)' : 'lỗi tạm thời'
+        liveLog.add(
+          'warning',
+          `${params.label ?? 'Yêu cầu'}: ${reason} (${errMsg}), thử lại lần ${attempt + 1}/${MAX_RETRIES} sau ${(delay / 1000).toFixed(1)}s...`
+        )
+        await sleep(delay, params.signal)
       } else {
         liveLog.add('error', `${params.label ?? 'Yêu cầu'}: thất bại sau ${MAX_RETRIES} lần thử — ${errMsg}`)
       }
