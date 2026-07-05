@@ -3,6 +3,7 @@ import { UploadCloud, FileText, Trash2, Play, X, Download, FolderArchive } from 
 import { GlassPanel } from '../common/GlassPanel'
 import { Button } from '../common/Button'
 import { ProgressBar, StatusBadge } from '../common/Progress'
+import { LiveLogPanel } from '../common/LiveLogPanel'
 import { useAppStore } from '../../store/useAppStore'
 import type { PageId } from '../layout/nav'
 
@@ -152,6 +153,8 @@ export function UploadPage({ onNavigate }: { onNavigate: (p: PageId) => void }) 
           </div>
         </GlassPanel>
       )}
+
+      <LiveLogPanel defaultOpen={isTranslating} />
     </div>
   )
 }

@@ -5,6 +5,7 @@ import { translateChunk } from '../deepseek'
 import { buildSystemPrompt } from '../systemPrompt'
 import { lookupTM, saveTM } from '../translationMemory'
 import { progressTracker } from '../progressTracker'
+import { liveLog } from '../liveLog'
 
 // Heuristic: skip strings that look like identifiers/paths/codes rather than
 // player-facing text (e.g. "en_US", "assets/img/x.png", "0xFF00", GUIDs).
@@ -57,7 +58,8 @@ export async function translateJson(
   settings: TranslationSettings,
   glossary: GlossaryEntry[],
   onProgress?: TranslateProgressCb,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fileLabel: string = 'Tệp'
 ): Promise<string> {
   const parsed = JSON.parse(rawContent)
   const leaves: LeafRef[] = []
@@ -83,14 +85,17 @@ export async function translateJson(
   let completed = 0
   const total = groups.length || 1
   progressTracker.addTotal(groups.length)
+  liveLog.add('info', `${fileLabel}: ${leaves.length} chuỗi, gộp thành ${groups.length} lượt gọi API`)
 
   await Promise.all(
-    groups.map(async (group) => {
+    groups.map(async (group, gi) => {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const label = `${fileLabel} · lượt ${gi + 1}/${groups.length}`
       const groupUnits = group.indices.map((i) => units[i])
       const userPrompt = `Dịch các đoạn văn bản sau sang tiếng Việt. Mỗi đoạn cách nhau bởi dòng phân cách "⁣⁣UNIT_SEP⁣⁣" — giữ nguyên số lượng đoạn và thứ tự, không gộp, không thêm bớt đoạn:\n\n${group.text}`
 
-      const translatedText = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal })
+      liveLog.add('info', `${label}: đang dịch ${groupUnits.length} chuỗi...`)
+      const translatedText = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal, label })
       const splitResult = splitUnits(translatedText, groupUnits.length)
 
       group.indices.forEach((unitIdx, i) => {
@@ -101,6 +106,7 @@ export async function translateJson(
         saveTM(values[entry.leafIndex], restored)
       })
 
+      liveLog.add('success', `${label}: hoàn tất`)
       completed += 1
       onProgress?.(completed, total)
     })

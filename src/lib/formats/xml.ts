@@ -5,6 +5,7 @@ import { translateChunk } from '../deepseek'
 import { buildSystemPrompt } from '../systemPrompt'
 import { lookupTM, saveTM } from '../translationMemory'
 import { progressTracker } from '../progressTracker'
+import { liveLog } from '../liveLog'
 
 // Matches text content strictly between > and < (i.e. element text nodes),
 // skipping tags, attributes, comments and CDATA markers themselves.
@@ -23,7 +24,8 @@ export async function translateXml(
   settings: TranslationSettings,
   glossary: GlossaryEntry[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fileLabel: string = 'Tệp'
 ): Promise<string> {
   const systemPrompt = buildSystemPrompt(settings, glossary)
 
@@ -49,12 +51,15 @@ export async function translateXml(
   let completed = 0
   const total = groups.length || 1
   progressTracker.addTotal(groups.length)
+  liveLog.add('info', `${fileLabel}: ${matches.length} text node, gộp thành ${groups.length} lượt gọi API`)
 
   await Promise.all(
-    groups.map(async (group) => {
+    groups.map(async (group, gi) => {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const label = `${fileLabel} · lượt ${gi + 1}/${groups.length}`
+      liveLog.add('info', `${label}: đang dịch...`)
       const userPrompt = `Dịch các đoạn văn bản XML sau sang tiếng Việt. Mỗi đoạn cách nhau bởi dòng phân cách "⁣⁣UNIT_SEP⁣⁣" — giữ nguyên số lượng và thứ tự đoạn:\n\n${group.text}`
-      const translatedText = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal })
+      const translatedText = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal, label })
       const splitResult = splitUnits(translatedText, group.indices.length)
 
       group.indices.forEach((localIdx, i) => {
@@ -65,6 +70,7 @@ export async function translateXml(
         saveTM(matches[globalIdx].text, restored)
       })
 
+      liveLog.add('success', `${label}: hoàn tất`)
       completed += 1
       onProgress?.(completed, total)
     })

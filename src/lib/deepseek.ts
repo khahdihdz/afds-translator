@@ -1,6 +1,7 @@
 import type { TranslationSettings } from '../types'
 import { globalScheduler } from './scheduler'
 import { progressTracker } from './progressTracker'
+import { liveLog } from './liveLog'
 
 const BASE_URL = 'https://api.vilao.ai/v1'
 
@@ -19,6 +20,7 @@ export interface TranslateChunkParams {
   apiKey: string
   settings: TranslationSettings
   signal?: AbortSignal
+  label?: string
 }
 
 async function callOnce(params: TranslateChunkParams): Promise<string> {
@@ -79,12 +81,17 @@ async function translateChunkWithRetry(params: TranslateChunkParams): Promise<st
       if (err instanceof DOMException && err.name === 'AbortError') {
         throw err
       }
+      const errMsg = err instanceof Error ? err.message : String(err)
       // Don't retry on auth errors (401/403) - won't help
       if (err instanceof TranslationApiError && (err.status === 401 || err.status === 403)) {
+        liveLog.add('error', `${params.label ?? 'Yêu cầu'}: lỗi xác thực API Key — ${errMsg}`)
         throw err
       }
       if (attempt < MAX_RETRIES) {
+        liveLog.add('warning', `${params.label ?? 'Yêu cầu'}: lỗi (${errMsg}), thử lại lần ${attempt + 1}/${MAX_RETRIES}...`)
         await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt, params.signal)
+      } else {
+        liveLog.add('error', `${params.label ?? 'Yêu cầu'}: thất bại sau ${MAX_RETRIES} lần thử — ${errMsg}`)
       }
     }
   }

@@ -5,6 +5,7 @@ import { translateChunk } from '../deepseek'
 import { buildSystemPrompt } from '../systemPrompt'
 import { lookupTM, saveTM } from '../translationMemory'
 import { progressTracker } from '../progressTracker'
+import { liveLog } from '../liveLog'
 
 interface PoEntry {
   msgidLine: number
@@ -28,7 +29,8 @@ export async function translatePo(
   settings: TranslationSettings,
   glossary: GlossaryEntry[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fileLabel: string = 'Tệp'
 ): Promise<string> {
   const lines = rawContent.split('\n')
   const entries: PoEntry[] = []
@@ -66,12 +68,15 @@ export async function translatePo(
   let completed = 0
   const total = groups.length || 1
   progressTracker.addTotal(groups.length)
+  liveLog.add('info', `${fileLabel}: ${translatable.length} chuỗi gettext, gộp thành ${groups.length} lượt gọi API`)
 
   await Promise.all(
-    groups.map(async (group) => {
+    groups.map(async (group, gi) => {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const label = `${fileLabel} · lượt ${gi + 1}/${groups.length}`
+      liveLog.add('info', `${label}: đang dịch...`)
       const userPrompt = `Dịch các chuỗi gettext (.po) sau sang tiếng Việt. Mỗi chuỗi cách nhau bởi "⁣⁣UNIT_SEP⁣⁣", giữ nguyên số lượng và thứ tự:\n\n${group.text}`
-      const translatedText = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal })
+      const translatedText = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal, label })
       const splitResult = splitUnits(translatedText, group.indices.length)
 
       group.indices.forEach((localIdx, i) => {
@@ -82,6 +87,7 @@ export async function translatePo(
         saveTM(translatable[globalIdx].msgid, restored)
       })
 
+      liveLog.add('success', `${label}: hoàn tất`)
       completed += 1
       onProgress?.(completed, total)
     })

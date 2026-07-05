@@ -5,6 +5,7 @@ import { translateChunk } from '../deepseek'
 import { buildSystemPrompt } from '../systemPrompt'
 import { lookupTM, saveTM } from '../translationMemory'
 import { progressTracker } from '../progressTracker'
+import { liveLog } from '../liveLog'
 
 export interface TranslateProgressCb {
   (completed: number, total: number): void
@@ -21,7 +22,8 @@ export async function translatePlainText(
   settings: TranslationSettings,
   glossary: GlossaryEntry[],
   onProgress?: TranslateProgressCb,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fileLabel: string = 'Tệp'
 ): Promise<TranslateResult> {
   const systemPrompt = buildSystemPrompt(settings, glossary)
   const chunks = chunkByLines(rawContent, 4200)
@@ -35,6 +37,7 @@ export async function translatePlainText(
     return !(cached && cached.split('\n').length === c.lineCount)
   })
   progressTracker.addTotal(needsTranslation.length)
+  liveLog.add('info', `${fileLabel}: ${chunks.length} đoạn (${needsTranslation.length} cần dịch, ${chunks.length - needsTranslation.length} lấy từ bộ nhớ dịch)`)
 
   await Promise.all(
     chunks.map(async (chunk) => {
@@ -48,24 +51,29 @@ export async function translatePlainText(
         return
       }
 
+      const label = `${fileLabel} · đoạn ${chunk.index + 1}/${chunks.length}`
       const { masked, map } = maskProtectedTokens(chunk.text)
       const userPrompt = `Dịch đoạn văn bản sau sang tiếng Việt, giữ nguyên số dòng và định dạng gốc:\n\n${masked}`
-      const translatedRaw = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal })
+      liveLog.add('info', `${label}: đang gửi...`)
+      const translatedRaw = await translateChunk({ systemPrompt, userPrompt, apiKey, settings, signal, label })
       let restored = restoreProtectedTokens(translatedRaw, map)
 
       const missing = validatePlaceholdersPreserved(chunk.text, restored)
       if (missing.length > 0) {
         warnings.push(`Chunk ${chunk.index + 1}: thiếu placeholder ${missing.join(', ')} — đã tự động khôi phục từ bản gốc.`)
+        liveLog.add('warning', `${label}: thiếu placeholder ${missing.join(', ')}, đã tự khôi phục`)
         restored = restoreProtectedTokens(masked, map)
       }
 
       const gotLines = restored.split('\n').length
       if (gotLines !== chunk.lineCount) {
         warnings.push(`Chunk ${chunk.index + 1}: số dòng thay đổi (${chunk.lineCount} → ${gotLines}).`)
+        liveLog.add('warning', `${label}: số dòng thay đổi (${chunk.lineCount} → ${gotLines})`)
       }
 
       outputs[chunk.index] = restored
       saveTM(chunk.text, restored)
+      liveLog.add('success', `${label}: hoàn tất`)
 
       completed += 1
       onProgress?.(completed, total)

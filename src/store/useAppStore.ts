@@ -6,6 +6,7 @@ import { extractZip, repackZip } from '../lib/zipHandler'
 import { translateProjectFile } from '../lib/translateFile'
 import { globalScheduler } from '../lib/scheduler'
 import { progressTracker } from '../lib/progressTracker'
+import { liveLog } from '../lib/liveLog'
 
 interface AppState {
   apiKey: string
@@ -129,13 +130,22 @@ export const useAppStore = create<AppState>()(
           }
         }
         set((s) => ({ files: [...s.files, ...newFiles] }))
+        liveLog.add('info', `Đã thêm ${newFiles.length} tệp (${fileList.map((f) => f.name).join(', ')})`)
         if (!get().activeFileId && newFiles.length > 0) {
           const firstEditable = newFiles.find((f) => !f.isBinaryPassthrough)
           if (firstEditable) set({ activeFileId: firstEditable.id })
         }
       },
-      removeFile: (id) => set((s) => ({ files: s.files.filter((f) => f.id !== id) })),
-      clearFiles: () => set({ files: [], activeFileId: null }),
+      removeFile: (id) =>
+        set((s) => {
+          const f = s.files.find((x) => x.id === id)
+          if (f) liveLog.add('info', `Đã xoá: ${f.path}`)
+          return { files: s.files.filter((f) => f.id !== id) }
+        }),
+      clearFiles: () => {
+        liveLog.add('info', 'Đã xoá toàn bộ danh sách tệp')
+        set({ files: [], activeFileId: null })
+      },
       updateFileContent: (id, translatedContent) =>
         set((s) => ({ files: s.files.map((f) => (f.id === id ? { ...f, translatedContent } : f)) })),
 
@@ -160,6 +170,7 @@ export const useAppStore = create<AppState>()(
         try {
           const file = get().files.find((f) => f.id === id)
           if (!file || file.isBinaryPassthrough) return
+          liveLog.add('info', `Bắt đầu dịch: ${file.path}`)
 
           const outcome = await translateProjectFile(
             file,
@@ -173,6 +184,7 @@ export const useAppStore = create<AppState>()(
             controller.signal
           )
 
+          liveLog.add('success', `Hoàn tất: ${file.path}${outcome.warnings.length > 0 ? ` (${outcome.warnings.length} cảnh báo)` : ''}`)
           set((s) => ({
             files: s.files.map((f) =>
               f.id === id
@@ -188,6 +200,7 @@ export const useAppStore = create<AppState>()(
           }))
         } catch (err) {
           const isAbort = err instanceof DOMException && err.name === 'AbortError'
+          liveLog.add(isAbort ? 'warning' : 'error', `${isAbort ? 'Đã huỷ' : 'Lỗi'}: ${(err as Error).message ?? ''}`)
           set((s) => ({
             files: setStatus(s.files, id, isAbort ? 'canceled' : 'error', undefined, isAbort ? undefined : (err as Error).message),
           }))
@@ -206,6 +219,7 @@ export const useAppStore = create<AppState>()(
 
         const targets = files.filter((f) => !f.isBinaryPassthrough && f.status !== 'done')
         targets.forEach((f) => set((s) => ({ files: setStatus(s.files, f.id, 'translating', 0) })))
+        liveLog.add('info', `Bắt đầu dịch ${targets.length} tệp (tối đa ${settings.concurrency} luồng song song)`)
 
         // Files are launched together; the shared global scheduler (not this
         // Promise.all) is what actually caps simultaneous network requests,
@@ -213,6 +227,7 @@ export const useAppStore = create<AppState>()(
         await Promise.all(
           targets.map(async (file) => {
             try {
+              liveLog.add('info', `Bắt đầu dịch: ${file.path}`)
               const outcome = await translateProjectFile(
                 file,
                 apiKey,
@@ -224,6 +239,7 @@ export const useAppStore = create<AppState>()(
                 },
                 controller.signal
               )
+              liveLog.add('success', `Hoàn tất: ${file.path}${outcome.warnings.length > 0 ? ` (${outcome.warnings.length} cảnh báo)` : ''}`)
               set((s) => ({
                 files: s.files.map((f) =>
                   f.id === file.id
@@ -239,6 +255,7 @@ export const useAppStore = create<AppState>()(
               }))
             } catch (err) {
               const isAbort = err instanceof DOMException && err.name === 'AbortError'
+              liveLog.add(isAbort ? 'warning' : 'error', `${isAbort ? 'Đã huỷ' : 'Lỗi'}: ${file.path}${!isAbort ? ` — ${(err as Error).message}` : ''}`)
               set((s) => ({
                 files: setStatus(s.files, file.id, isAbort ? 'canceled' : 'error', undefined, isAbort ? undefined : (err as Error).message),
               }))
@@ -246,10 +263,12 @@ export const useAppStore = create<AppState>()(
           })
         )
 
+        liveLog.add('info', `Đã xử lý xong ${targets.length} tệp`)
         set({ isTranslating: false, abortController: null })
       },
 
       cancelTranslation: () => {
+        liveLog.add('warning', 'Người dùng huỷ quá trình dịch')
         get().abortController?.abort()
         set({ isTranslating: false })
       },
@@ -257,6 +276,7 @@ export const useAppStore = create<AppState>()(
       downloadAllAsZip: async () => {
         const { files } = get()
         if (files.length === 0) return
+        liveLog.add('info', `Đang đóng gói ${files.length} tệp thành ZIP...`)
         const blob = await repackZip(files)
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
@@ -264,6 +284,7 @@ export const useAppStore = create<AppState>()(
         a.download = 'afds-translated.zip'
         a.click()
         URL.revokeObjectURL(url)
+        liveLog.add('success', 'Đã tải xuống afds-translated.zip')
       },
     }),
     {
